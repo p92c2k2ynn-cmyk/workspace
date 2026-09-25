@@ -4193,7 +4193,10 @@ body {
   }
 
   /* ===== 云同步设置面板 ===== */
-  (function cloudUI() {
+  /* 注意：面板的 HTML 写在脚本标签之后，脚本执行时还没解析出来，
+     所以必须等 DOM 就绪再初始化（否则 getElementById 返回 null，
+     连“手机点链接自动配置”都不会生效）。 */
+  function cloudUIInit() {
     var btn = document.getElementById('wb-cloud-btn');
     var panel = document.getElementById('wb-cloud-panel');
     if (!btn || !panel) return;
@@ -4292,7 +4295,15 @@ body {
     } catch (e3) {}
 
     refresh();
-  })();
+  }
+
+  /* 先初始化云同步面板（把链接里的配置读进来），再 init() 启动页面，
+     保证云配置在第一次同步之前就已生效。 */
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', cloudUIInit);
+  } else {
+    cloudUIInit();
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
