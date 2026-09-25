@@ -1420,6 +1420,33 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 .sidebar ::-webkit-scrollbar-thumb { background: #475569; }
+/* ===== 云同步：悬浮按钮与设置面板 ===== */
+#wb-cloud-btn{position:fixed;right:18px;bottom:18px;width:46px;height:46px;border-radius:50%;
+  background:#0f766e;color:#fff;font-size:22px;line-height:46px;text-align:center;cursor:pointer;
+  box-shadow:0 2px 12px rgba(0,0,0,.28);z-index:9998;user-select:none;-webkit-user-select:none}
+#wb-cloud-btn:hover{background:#115e59}
+#wb-cloud-panel{display:none;position:fixed;right:18px;bottom:76px;width:340px;max-width:calc(100vw - 36px);
+  max-height:80vh;overflow:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+  box-shadow:0 12px 34px rgba(0,0,0,.2);padding:14px;z-index:9999;font-size:13px;color:#1e293b;text-align:left}
+.wb-c-title{font-weight:700;font-size:15px;margin-bottom:8px}
+.wb-c-status{font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;
+  padding:6px 8px;margin-bottom:10px;word-break:break-all}
+.wb-c-status.on{color:#065f46;background:#ecfdf5;border-color:#a7f3d0}
+.wb-c-status.bad{color:#991b1b;background:#fef2f2;border-color:#fecaca}
+.wb-c-label{display:block;margin:8px 0 0;font-size:12px;color:#475569}
+.wb-c-label input{display:block;width:100%;box-sizing:border-box;margin-top:3px;padding:6px 8px;
+  border:1px solid #cbd5e1;border-radius:6px;font-size:12px;font-family:inherit}
+.wb-c-row{display:flex;gap:8px;margin-top:10px}
+.wb-c-row button{flex:1;padding:7px 8px;border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;
+  cursor:pointer;font-size:12px;font-family:inherit}
+.wb-c-row button:hover{background:#f1f5f9}
+.wb-c-row button.wb-c-primary{background:#0f766e;border-color:#0f766e;color:#fff}
+.wb-c-row button.wb-c-primary:hover{background:#115e59}
+.wb-c-tip{font-size:11px;color:#64748b;line-height:1.6;margin:10px 0 0}
+.wb-c-out{margin-top:8px;font-size:11px;word-break:break-all;color:#334155}
+.wb-c-out textarea{width:100%;height:72px;box-sizing:border-box;font-size:10px;font-family:monospace;
+  border:1px solid #cbd5e1;border-radius:6px;padding:6px}
+@media (max-width:640px){#wb-cloud-btn{right:12px;bottom:12px}#wb-cloud-panel{right:12px;bottom:66px}}
 </style>
 </head>
 <body data-page-node-id="MwPM7iaYTcjFP7jNuZcEFu" style="">
@@ -2001,12 +2028,121 @@ body {
   /* 本地存储始终作为唯一数据源；云端 SDK（cloudDb）仅在未来作可选同步增强，绝不阻塞渲染 */
   db = localDb; sdkReady = true; localMode = true;
 
+  /* ===== 云端同步（GitHub 私有仓库当数据后端）=====
+     为什么用 GitHub：家里网络实测 workers.dev / vercel / firebase 都被 DNS 污染
+     打不开，而 api.github.com 又快又稳（0.36s）。数据存在私有仓库的一个 json 文件里，
+     这样电脑关机、人在外面，手机照样能看能记。
+     局域网本地服务（「启动工作台」）继续保留，当离线/同 Wi-Fi 的备份用。 */
+  var CLOUD = { owner: '', repo: '', path: 'data.json', branch: 'main', token: '' };
+  var CLOUD_KEY = 'wb_cloud_cfg';
+  try {
+    var _cj = localStorage.getItem(CLOUD_KEY);
+    if (_cj) {
+      var _co = JSON.parse(_cj);
+      for (var _ck in _co) { if (_co[_ck]) CLOUD[_ck] = _co[_ck]; }
+    }
+  } catch (e) {}
+
+  function cloudOn() { return !!(CLOUD.owner && CLOUD.repo && CLOUD.token); }
+  function cloudSaveCfg(o) {
+    CLOUD.owner = (o.owner || '').replace(/^\s+|\s+$/g, '');
+    CLOUD.repo = (o.repo || '').replace(/^\s+|\s+$/g, '');
+    CLOUD.path = (o.path || 'data.json').replace(/^\s+|\s+$/g, '');
+    CLOUD.branch = (o.branch || 'main').replace(/^\s+|\s+$/g, '');
+    CLOUD.token = (o.token || '').replace(/^\s+|\s+$/g, '');
+    try { localStorage.setItem(CLOUD_KEY, JSON.stringify(CLOUD)); } catch (e) {}
+  }
+  function cloudClearCfg() { try { localStorage.removeItem(CLOUD_KEY); } catch (e) {} }
+  function cloudUrl() {
+    return 'https://api.github.com/repos/' + CLOUD.owner + '/' + CLOUD.repo +
+           '/contents/' + CLOUD.path;
+  }
+  function cloudHeaders(extra) {
+    var h = {
+      'Authorization': 'Bearer ' + CLOUD.token,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+    if (extra) { for (var k in extra) h[k] = extra[k]; }
+    return h;
+  }
+  function b64enc(s) { return btoa(unescape(encodeURIComponent(s))); }
+  function b64dec(s) { return decodeURIComponent(escape(atob(s))); }
+
+  function cloudPull() {
+    // cache:'no-cache' = 每次带 ETag 去问一下；没变就 304（0 字节，也不占配额）
+    return fetch(cloudUrl() + '?ref=' + encodeURIComponent(CLOUD.branch),
+                 { headers: cloudHeaders(), cache: 'no-cache' })
+      .then(function (r) {
+        if (r.status === 404) return { ts: 0, data: {}, sha: null };
+        if (r.status === 401 || r.status === 403) throw new Error('令牌无效或没权限');
+        if (!r.ok) throw new Error('云端读取失败 HTTP ' + r.status);
+        return r.json().then(function (j) {
+          var obj = {};
+          try { obj = JSON.parse(b64dec((j.content || '').replace(/\s/g, ''))); } catch (e) { obj = {}; }
+          return { ts: obj.ts || 0, data: obj.data || {}, sha: j.sha || null };
+        });
+      });
+  }
+  function cloudPut(data, sha, message) {
+    var ts = Date.now();
+    var body = {
+      message: message || ('工作台同步 ' + new Date().toLocaleString()),
+      content: b64enc(JSON.stringify({ ts: ts, data: data })),
+      branch: CLOUD.branch
+    };
+    if (sha) body.sha = sha;
+    return fetch(cloudUrl(), {
+      method: 'PUT',
+      headers: cloudHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      if (r.status === 409 || r.status === 422) throw new Error('conflict');
+      if (r.status === 401 || r.status === 403) throw new Error('令牌无效或没权限');
+      if (!r.ok) throw new Error('云端写入失败 HTTP ' + r.status);
+      return { ok: true, ts: ts };
+    });
+  }
+  function cloudApplyOps(ops, retries) {
+    if (retries === undefined) retries = 3;
+    return cloudPull().then(function (cur) {
+      var data = cur.data;
+      for (var i = 0; i < ops.length; i++) {
+        var o = ops[i];
+        if (!o || !o.table || !o.id) continue;
+        if (!data[o.table]) data[o.table] = {};
+        if (o.op === 'del') { delete data[o.table][o.id]; }
+        else {
+          var rec = {}; var src = o.record || {};
+          for (var k in src) rec[k] = src[k];
+          rec._id = o.id;
+          data[o.table][o.id] = rec;
+        }
+      }
+      return cloudPut(data, cur.sha).catch(function (err) {
+        if (String(err && err.message) === 'conflict' && retries > 0) {
+          return new Promise(function (res) { setTimeout(res, 700); })
+            .then(function () { return cloudApplyOps(ops, retries - 1); });
+        }
+        throw err;
+      });
+    });
+  }
+  function cloudReplace(store) {
+    return cloudPull().then(function (cur) {
+      return cloudPut(store, cur.sha, '整表同步 ' + new Date().toLocaleString());
+    });
+  }
+
   /* ===== 局域网同步（可选）：通过「启动工作台」打开时生效 =====
      数据存到 Mac 上的「工作台数据.json」，电脑/手机共用同一份，
      单条操作用 put/del，避免两台设备互相覆盖。没有服务时自动退回本地存储。 */
   var SERVER_SYNC = { available: false, ts: null };
 
   function serverFetch() {
+    if (cloudOn()) {
+      return cloudPull().then(function (j) { return { ok: true, ts: j.ts, data: j.data }; });
+    }
     return fetch('api/data', { cache: 'no-store' }).then(function (r) {
       if (!r.ok) throw new Error('no api');
       return r.json();
@@ -2014,11 +2150,23 @@ body {
   }
   function serverSetStatus(on) {
     var text = $('#sync-text'); var badge = $('#sync-badge');
-    if (text) text.textContent = on ? '局域网已同步' : '本地存储';
+    if (text) text.textContent = on ? (cloudOn() ? '云端已同步' : '局域网已同步') : '本地存储';
     if (badge) badge.classList.remove('offline');
+    var nf = $('.nav-foot');
+    if (nf) nf.innerHTML = on && cloudOn()
+      ? '☁️ 已开云端同步<br>任何设备、任何时候都能用'
+      : (on ? '已连局域网服务<br>电脑和手机共用一份' : '数据保存在本机浏览器<br>可导出备份 / 换设备恢复');
   }
   function serverOp(payload) {
     if (!SERVER_SYNC.available) return;
+    if (cloudOn()) {
+      cloudApplyOps([payload]).then(function (j) {
+        if (j && j.ts) SERVER_SYNC.ts = j.ts;
+      }).catch(function (e) {
+        try { console.warn('[workspace] 云端写入失败：', e); } catch (e2) {}
+      });
+      return;
+    }
     try {
       fetch('api/op', {
         method: 'POST',
@@ -2032,6 +2180,12 @@ body {
   function serverPut(table, id, record) { serverOp({ op: 'put', table: table, id: id, record: record }); }
   function serverDel(table, id) { serverOp({ op: 'del', table: table, id: id }); }
   function serverReplace(store) {
+    if (cloudOn()) {
+      return cloudReplace(store).then(function (j) {
+        if (j && j.ts) SERVER_SYNC.ts = j.ts;
+        return j;
+      });
+    }
     try {
       return fetch('api/set', {
         method: 'POST',
@@ -2062,6 +2216,9 @@ body {
     serverFetch().then(function (j) {
       if (!j) return;
       if (j.ts && j.ts !== SERVER_SYNC.ts) {
+        // 只认更新的版本：GitHub 的 CDN 偶尔会回一份旧缓存，
+        // 不挡住的话会把刚写的改动在界面上“退回”一下。
+        if (SERVER_SYNC.ts && j.ts < SERVER_SYNC.ts) return;
         SERVER_SYNC.ts = j.ts;
         try {
           localStorage.setItem(STORE_KEY, JSON.stringify(j.data || {}));
@@ -2077,7 +2234,7 @@ body {
       if (typeof location === 'undefined' || location.protocol === 'file:') return;
       // 只有通过「启动工作台」的本地服务打开时，页面才会被注入这个标记；
       // 静态托管（如 GitHub Pages）上没有它，就不会去请求 API，避免多余报错。
-      if (!(document.querySelector && document.querySelector('meta[name="wb-server"]'))) return;
+      if (!cloudOn() && !(document.querySelector && document.querySelector('meta[name="wb-server"]'))) return;
     } catch (e) { return; }
     serverFetch().then(function (j) {
       SERVER_SYNC.available = true;
@@ -2097,13 +2254,19 @@ body {
       // 服务器还没有数据：把本机（电脑）现有数据推上去
       try { ensureSeeded(); } catch (e) {}
       serverSetStatus(true);
+      if (cloudOn()) {
+        var okUp = true;
+        try { okUp = window.confirm('云端还是空的。要把这台设备上的数据上传到云端吗？\n（本机数据不重要的话就点「取消」）'); } catch (e2) {}
+        if (!okUp) return reloadAll();
+      }
       return serverReplace(_readStore()).then(function () { return reloadAll(); });
     }).catch(function () {
       SERVER_SYNC.available = false;
       serverSetStatus(false);
     });
     try {
-      if (typeof setInterval === 'function') setInterval(serverPoll, 8000);
+      // 云端走网络，30 秒问一次就够（带 ETag，没变就是 0 字节 304，不占配额）；本机服务保持 8 秒
+      if (typeof setInterval === 'function') setInterval(serverPoll, cloudOn() ? 30000 : 8000);
       if (typeof window !== 'undefined' && window.addEventListener) {
         window.addEventListener('focus', serverPoll);
       }
@@ -4029,6 +4192,108 @@ body {
     tryServerSync();
   }
 
+  /* ===== 云同步设置面板 ===== */
+  (function cloudUI() {
+    var btn = document.getElementById('wb-cloud-btn');
+    var panel = document.getElementById('wb-cloud-panel');
+    if (!btn || !panel) return;
+    var out = document.getElementById('wb-c-out');
+
+    function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+    function set(id, v) { var e = document.getElementById(id); if (e) e.value = v || ''; }
+    function show(on) { panel.style.display = on ? 'block' : 'none'; if (on) { fill(); refresh(); } }
+    function fill() {
+      set('wb-c-owner', CLOUD.owner); set('wb-c-repo', CLOUD.repo);
+      set('wb-c-path', CLOUD.path || 'data.json'); set('wb-c-branch', CLOUD.branch || 'main');
+      set('wb-c-token', CLOUD.token);
+    }
+    function refresh() {
+      var st = document.getElementById('wb-cloud-status');
+      if (!st) return;
+      if (cloudOn()) {
+        st.className = 'wb-c-status on';
+        st.textContent = '已连接：' + CLOUD.owner + '/' + CLOUD.repo + '（' + CLOUD.branch + '）';
+      } else {
+        st.className = 'wb-c-status';
+        st.textContent = '未连接 —— 现在数据只存在这个浏览器里';
+      }
+    }
+    function info(html, ok) {
+      if (out) out.innerHTML = '<div style="margin-bottom:6px;color:' + (ok ? '#065f46' : '#991b1b') + '">' + html + '</div>';
+    }
+
+    btn.onclick = function () { show(panel.style.display !== 'block'); };
+    var el;
+    el = document.getElementById('wb-c-close');
+    if (el) el.onclick = function () { show(false); };
+
+    el = document.getElementById('wb-c-save');
+    if (el) el.onclick = function () {
+      var o = { owner: val('wb-c-owner'), repo: val('wb-c-repo'), path: val('wb-c-path'),
+                branch: val('wb-c-branch'), token: val('wb-c-token') };
+      if (!o.owner || !o.repo || !o.token) { info('用户名、仓库名、访问令牌都要填', false); return; }
+      if (o.owner.indexOf('/') >= 0) { info('「仓库用户名」只填用户名，不要带斜杠', false); return; }
+      cloudSaveCfg(o);
+      info('正在连接云端…', true);
+      cloudPull().then(function (j) {
+        var total = 0, t;
+        for (t in j.data) { if (j.data[t]) total += Object.keys(j.data[t]).length; }
+        info('✅ 连接成功：云端有 ' + total + ' 条数据。正在同步到本机…', true);
+        try {
+          localStorage.setItem(STORE_KEY, JSON.stringify(j.data || {}));
+          localStorage.setItem(SEED_FLAG, '1');
+        } catch (e) {}
+        setTimeout(function () { location.reload(); }, 900);
+      }).catch(function (e) {
+        info('❌ 连接失败：' + ((e && e.message) ? e.message : e), false);
+      });
+    };
+
+    el = document.getElementById('wb-c-push');
+    if (el) el.onclick = function () {
+      if (!cloudOn()) { info('先填写上面的信息并点「保存并连接」', false); return; }
+      info('正在把本机数据推到云端…', true);
+      cloudReplace(_readStore()).then(function () {
+        info('✅ 已上传到云端', true);
+      }).catch(function (e) {
+        info('❌ 上传失败：' + ((e && e.message) ? e.message : e), false);
+      });
+    };
+
+    el = document.getElementById('wb-c-off');
+    if (el) el.onclick = function () {
+      if (!window.confirm('断开云端同步？断后本机数据保留，但不再和云端同步。')) return;
+      cloudClearCfg();
+      location.reload();
+    };
+
+    el = document.getElementById('wb-c-link');
+    if (el) el.onclick = function () {
+      if (!cloudOn()) { info('先填写上面的信息并点「保存并连接」', false); return; }
+      var u = location.origin + location.pathname + '#wbcloud=' +
+              encodeURIComponent(b64enc(JSON.stringify(CLOUD)));
+      if (out) {
+        out.innerHTML = '<div style="color:#065f46;margin-bottom:6px">把这串链接发到手机（微信「文件传输助手」最方便），手机上点开就自动配好：</div>' +
+          '<textarea readonly></textarea>' +
+          '<div style="color:#b45309;margin-top:6px">⚠️ 链接里带着令牌，手机配好后请把那条消息删掉。</div>';
+        var ta = out.querySelector('textarea');
+        if (ta) { ta.value = u; try { ta.select(); } catch (e) {} }
+      }
+    };
+
+    /* 手机点链接自动配置：形如 ...#wbcloud=<base64> */
+    try {
+      var m = /[#&]wbcloud=([^&]+)/.exec(location.hash || '');
+      if (m) {
+        cloudSaveCfg(JSON.parse(b64dec(decodeURIComponent(m[1]))));
+        if (history.replaceState) history.replaceState(null, '', location.pathname + location.search);
+        try { window.alert('云同步已自动配置好 ✅'); } catch (e4) {}
+      }
+    } catch (e3) {}
+
+    refresh();
+  })();
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
@@ -4036,5 +4301,30 @@ body {
   }
 })();
 </script>
+
+<!-- ===== 云同步：悬浮按钮 + 设置面板 ===== -->
+<div id="wb-cloud-btn" title="云同步设置">☁</div>
+<div id="wb-cloud-panel" role="dialog" aria-label="云同步设置">
+  <div class="wb-c-title">☁ 云同步设置</div>
+  <div id="wb-cloud-status" class="wb-c-status">未连接</div>
+  <label class="wb-c-label">仓库用户名<input id="wb-c-owner" autocomplete="off" placeholder="例如 p92c2k2ynn-cmyk"></label>
+  <label class="wb-c-label">仓库名<input id="wb-c-repo" autocomplete="off" placeholder="workbench-data"></label>
+  <label class="wb-c-label">文件路径<input id="wb-c-path" autocomplete="off" placeholder="data.json"></label>
+  <label class="wb-c-label">分支<input id="wb-c-branch" autocomplete="off" placeholder="main"></label>
+  <label class="wb-c-label">访问令牌<input id="wb-c-token" autocomplete="off" placeholder="ghp_..."></label>
+  <div class="wb-c-row">
+    <button id="wb-c-save" type="button" class="wb-c-primary">保存并连接</button>
+    <button id="wb-c-push" type="button">本机数据推到云端</button>
+  </div>
+  <div class="wb-c-row">
+    <button id="wb-c-link" type="button">生成手机配置链接</button>
+    <button id="wb-c-off" type="button">断开云端</button>
+  </div>
+  <div class="wb-c-row">
+    <button id="wb-c-close" type="button">关闭</button>
+  </div>
+  <p class="wb-c-tip">填好后，任何设备打开这个页面看到的都是同一份数据，家里电脑关机也不影响。令牌只存在你自己的浏览器里，不会写进公开的页面代码。</p>
+  <div id="wb-c-out" class="wb-c-out"></div>
+</div>
 
 </body></html>
